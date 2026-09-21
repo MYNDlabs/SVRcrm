@@ -1,2 +1,2 @@
 # SVRcrm
-This is SVR sales pipeline CRM as a standalone website you control: one HTML file, backed by a free Supabase database, deployable to any static host. Nothing here depends on Claude to keep running.
+This is SVR sales pipeline CRM as a standalone website you control: one HTML file, backed by a free Supabase database, deployable to any static host. 
