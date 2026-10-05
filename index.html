@@ -653,7 +653,7 @@
   // (Project Settings → API). See README.md for full setup steps.
   // ====================================================================
   var SUPABASE_URL = "https://bxfdoisnjsttgvpwbjtd.supabase.co";           // e.g. https://xxxxxxxx.supabase.co
-  var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4ZmRvaXNuanN0dGd2cHdianRkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDI4MzMsImV4cCI6MjEwNTA3ODgzM30.9PuwCjqDiELKg4lPfmpZqX8hzBK_lHFsDLD31VAS83U";  // the "anon public" key
+  var SUPABASE_ANON_KEY = "yJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4ZmRvaXNuanN0dGd2cHdianRkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDI4MzMsImV4cCI6MjEwNTA3ODgzM30.9PuwCjqDiELKg4lPfmpZqX8hzBK_lHFsDLD31VAS83U";  // the "anon public" key
   // ====================================================================
 
   var CONFIG_OK = SUPABASE_URL.indexOf('YOUR_SUPABASE_URL') === -1 &&
@@ -927,42 +927,96 @@
     try { return new URL(href, base || undefined).href; } catch(e){ return href; }
   }
   function extractFromLinkedCards(doc, sourceUrl){
+    // Some sites link the card's heading itself (Bridge Housing); others show the
+    // name as plain text and put a separate "View Property"/"Learn More"-style
+    // button elsewhere in the card instead. This covers both.
+    var CTA_TEXT_RE = /\b(view|see)\s+(propert(?:y|ies)|listing|home|details?)\b|\b(view|see|read)\s+more\b|\blearn\s+more\b|\bmore\s+(info(?:rmation)?|details?)\b|\bfull\s+details?\b|^details?$/i;
+    function findCardDetailLink(container){
+      var candidates = Array.prototype.slice.call(container.querySelectorAll('a[href]')).filter(function(a){
+        var href = (a.getAttribute('href') || '').trim();
+        return href && !/^(mailto:|tel:|javascript:|#)/i.test(href);
+      });
+      if (!candidates.length) return null;
+      var byText = candidates.filter(function(a){ return CTA_TEXT_RE.test((a.textContent || '').trim()); });
+      if (byText.length === 1) return byText[0];
+      if (!byText.length && candidates.length === 1) return candidates[0];
+      return null; // more than one plausible link and no clear winner — don't guess
+    }
+    // CITY_ZIP_RE (below) is the strong signal: a full "City, ST ZIP". Some sites
+    // (e.g. ones that only show "Street, City" with no state/ZIP) need a looser
+    // fallback — a line that starts with a number, like a street address, and
+    // ends with what looks like a place name.
+    function looksLikeStreetCityLine(line){
+      if (!line || line.length > 80 || !/^\d/.test(line)) return false;
+      var comma = line.indexOf(',');
+      if (comma === -1) return false;
+      var streetPart = line.slice(0, comma).trim();
+      var cityPart = line.slice(comma + 1).trim();
+      if (streetPart.length < 4 || /\.\s*$/.test(cityPart)) return false;
+      return /^[A-Z][A-Za-z .'-]{1,40}$/.test(cityPart);
+    }
+
     var headings = Array.prototype.slice.call(doc.querySelectorAll('h1, h2, h3, h4'));
     var out = [];
     headings.forEach(function(hd){
       var link = hd.querySelector('a[href]');
       if (!link && hd.parentElement && hd.parentElement.tagName === 'A') link = hd.parentElement;
       var name = hd.textContent.replace(/\s+/g, ' ').trim();
-      if (!link || !name) return;
+      if (!name) return;
+      var hadHeadingLink = !!link;
 
       // Walk up from the heading to the smallest ancestor that both (a) contains
-      // a "City, ST ZIP"-shaped line and (b) wraps only this one card — so
-      // neighbouring cards' addresses don't bleed into each other.
-      var container = hd.parentElement, depth = 0, lines = null, cityLine = null, cityMatch = null;
+      // an address-shaped line and (b) wraps only this one card — so neighbouring
+      // cards' addresses (and links) don't bleed into each other. Without a linked
+      // heading there's no linked-heading count to anchor the boundary on, so
+      // plain heading count is used instead.
+      var container = hd.parentElement, depth = 0, lines = null, cityLine = null, cityMatch = null, looseMatch = false;
       while (container && depth < 5){
         var candidateLines = blockLines(container);
-        cityLine = null; cityMatch = null;
+        cityLine = null; cityMatch = null; looseMatch = false;
         for (var i = 0; i < candidateLines.length; i++){
           var m = CITY_ZIP_RE.exec(candidateLines[i]);
           if (m){ cityLine = candidateLines[i]; cityMatch = m; break; }
         }
-        var headingLinkCount = container.querySelectorAll('h1 a[href], h2 a[href], h3 a[href], h4 a[href]').length;
-        if (cityMatch && headingLinkCount <= 1){ lines = candidateLines; break; }
-        cityMatch = null;
+        if (!cityMatch){
+          for (var i2 = 0; i2 < candidateLines.length; i2++){
+            if (looksLikeStreetCityLine(candidateLines[i2])){ cityLine = candidateLines[i2]; looseMatch = true; break; }
+          }
+        }
+        var withinBounds;
+        if (hadHeadingLink){
+          var headingLinkCount = container.querySelectorAll('h1 a[href], h2 a[href], h3 a[href], h4 a[href]').length;
+          withinBounds = headingLinkCount <= 1;
+        } else {
+          var headingCount = container.querySelectorAll('h1, h2, h3, h4').length;
+          withinBounds = headingCount <= 1;
+        }
+        if ((cityMatch || looseMatch) && withinBounds){ lines = candidateLines; break; }
+        cityMatch = null; looseMatch = false;
         container = container.parentElement; depth++;
       }
-      if (!cityMatch) return;
+      if (!cityMatch && !looseMatch) return;
 
-      // Street text can share the city/zip's own line ("123 Main St., Springfield, CA 90000")
-      // or sit on the line just before it — handle either layout.
-      var prefix = cityLine.slice(0, cityMatch.index).replace(/[,\s]+$/, '').trim();
-      if (!prefix){
-        var idx = lines.indexOf(cityLine);
-        for (var j = idx - 1; j >= 0; j--){
-          if (lines[j] && lines[j] !== name){ prefix = lines[j]; break; }
-        }
+      if (!link){
+        link = findCardDetailLink(container);
+        if (!link) return;
       }
-      var address = (prefix ? prefix + ', ' : '') + cityMatch[0];
+
+      var address;
+      if (looseMatch){
+        address = cityLine;
+      } else {
+        // Street text can share the city/zip's own line ("123 Main St., Springfield, CA 90000")
+        // or sit on the line just before it — handle either layout.
+        var prefix = cityLine.slice(0, cityMatch.index).replace(/[,\s]+$/, '').trim();
+        if (!prefix){
+          var idx = lines.indexOf(cityLine);
+          for (var j = idx - 1; j >= 0; j--){
+            if (lines[j] && lines[j] !== name){ prefix = lines[j]; break; }
+          }
+        }
+        address = (prefix ? prefix + ', ' : '') + cityMatch[0];
+      }
 
       out.push({ name: name, address: address, listPrice: 0, extra: { detailUrl: resolveUrl(link.getAttribute('href') || '', sourceUrl) } });
     });
